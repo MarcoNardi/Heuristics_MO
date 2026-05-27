@@ -1,10 +1,12 @@
+#!/usr/bin/env python3
+import sys
+import time
+import os
 from SCSolution import SCSolution
 import numpy as np
 from joblib import Parallel, delayed
 import numpy as np
-import matplotlib.pyplot as plt
 import random
-import time
 
 
 def load_scp_column_format(filepath):
@@ -216,34 +218,109 @@ def GRASP_parallel_wrapper(m, n, costs, columns, rows, iterations, seed_sol=None
     return best_local
 
 
-if __name__ == "__main__":
+# if __name__ == "__main__":
 
-    folder = "./rail/instances/"
-    m, n, costs, columns = load_scp_column_format(folder + "rail2536")
+#     folder = "./rail/instances/"
+#     m, n, costs, columns = load_scp_column_format(folder + "rail2536")
+#     # create rows data structure
+#     rows = [set() for row in range(m)]
+#     for j, col in enumerate(columns):
+#         for i in col:
+#             rows[i].add(j)
+#     # res = GRASP(m, n, costs, columns, rows, iterations=50)
+
+#     # print(f" best {res}, cost: {res.total_cost}")
+#     # use joblib to run multiple GRASP instances in parallel
+
+#     # --- Main Execution ---
+#     total_iterations = 100
+#     batch_size = 5  # Each worker does 5 iterations before reporting back
+#     best_overall = None
+
+#     for i in range(0, total_iterations, batch_size * 4):  # 4 is n_jobs
+#         # Run 4 workers in parallel
+#         results = Parallel(n_jobs=4)(delayed(GRASP_parallel_wrapper)(m, n, costs, columns, rows, batch_size, best_overall) for _ in range(4))
+
+#         # Sync: Find the best among all workers
+#         for sol in results:
+#             if best_overall is None or sol.total_cost < best_overall.total_cost:
+#                 best_overall = sol.copy()
+#                 print(f"--- GLOBAL SYNC RECORD: {best_overall.total_cost} ---")
+
+#     # num_runs = 4
+#     # results = Parallel(n_jobs=num_runs)(delayed(GRASP)(m, n, costs, columns, rows, iterations=50) for _ in range(num_runs))
+
+# ... [Your SCSolution, GRASP, ILS, and localSearch code here] ...
+
+
+def GRASP_with_reporting(m, n, costs, columns, rows, report_callback, total_iterations=100, batch_size=5):
+    best_overall = None
+
+    # We divide iterations by (batch_size * n_jobs)
+    # n_jobs=4 assumes a standard quad-core setup
+    n_jobs = 4
+
+    for i in range(0, total_iterations, batch_size * n_jobs):
+        # 1. Dispatch workers with the current global best
+        results = Parallel(n_jobs=n_jobs)(delayed(GRASP_parallel_wrapper)(m, n, costs, columns, rows, batch_size, best_overall) for _ in range(n_jobs))
+
+        # 2. Synchronize: Check if any worker found a new champion
+        batch_improved = False
+        for sol in results:
+            if sol is None:
+                continue
+            if best_overall is None or sol.total_cost < best_overall.total_cost:
+                best_overall = sol.copy()
+                batch_improved = True
+
+        # 3. Report the new best to the console and create .sol file
+        if batch_improved:
+            report_callback(best_overall)
+
+    return best_overall
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: ./sc_solver <path_to_instance>")
+        return
+
+    instance_path = sys.argv[1]
+
+    # Load Data
+    m, n, costs, columns = load_scp_column_format(instance_path)
     # create rows data structure
     rows = [set() for row in range(m)]
     for j, col in enumerate(columns):
         for i in col:
             rows[i].add(j)
-    # res = GRASP(m, n, costs, columns, rows, iterations=50)
 
-    # print(f" best {res}, cost: {res.total_cost}")
-    # use joblib to run multiple GRASP instances in parallel
+    start_time = time.perf_counter()
+    solution_counter = 0
 
-    # --- Main Execution ---
-    total_iterations = 100
-    batch_size = 5  # Each worker does 5 iterations before reporting back
-    best_overall = None
+    # This is a callback-style logic for your GRASP loop
+    def report_solution(sol):
+        nonlocal solution_counter
+        solution_counter += 1
+        elapsed = time.perf_counter() - start_time
 
-    for i in range(0, total_iterations, batch_size * 4):  # 4 is n_jobs
-        # Run 4 workers in parallel
-        results = Parallel(n_jobs=4)(delayed(GRASP_parallel_wrapper)(m, n, costs, columns, rows, batch_size, best_overall) for _ in range(4))
+        # Print the required line
+        print(f"#### Feasible solution of value {sol.total_cost} [time {elapsed:.4f}]")
 
-        # Sync: Find the best among all workers
-        for sol in results:
-            if best_overall is None or sol.total_cost < best_overall.total_cost:
-                best_overall = sol.copy()
-                print(f"--- GLOBAL SYNC RECORD: {best_overall.total_cost} ---")
+        # Save the solution file
+        # Format: instance.1.sol, instance.2.sol, etc.
+        filename = f"instance.{solution_counter}.sol"
+        with open(filename, "w") as f:
+            f.write(f"{sol.total_cost}\n")
+            # Get indices of selected columns
+            indices = [str(j) for j, selected in enumerate(sol.selected) if selected]
+            f.write(" ".join(indices) + "\n")
 
-    # num_runs = 4
-    # results = Parallel(n_jobs=num_runs)(delayed(GRASP)(m, n, costs, columns, rows, iterations=50) for _ in range(num_runs))
+    # --- 2. Run your solver ---
+    # You should modify your GRASP loop to call 'report_solution(best_overall)'
+    # every time it finds an improvement.
+    GRASP_with_reporting(m, n, costs, columns, rows, report_solution)
+
+
+if __name__ == "__main__":
+    main()
