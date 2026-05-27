@@ -1,0 +1,249 @@
+from SCSolution import SCSolution
+import numpy as np
+from joblib import Parallel, delayed
+import numpy as np
+import matplotlib.pyplot as plt
+import random
+import time
+
+
+def load_scp_column_format(filepath):
+    with open(filepath, "r") as f:
+        data = list(map(int, f.read().split()))
+
+    idx = 0
+
+    # problem size
+    m = data[idx]
+    idx += 1
+    n = data[idx]
+    idx += 1
+
+    costs = []
+    columns = []  # columns[j] = set of rows covered by column j
+
+    for _ in range(n):
+        cost = data[idx]
+        idx += 1
+
+        k = data[idx]
+        idx += 1
+
+        rows = data[idx : idx + k]
+        idx += k
+
+        # convert to 0-based indexing
+        rows = [r - 1 for r in rows]
+
+        costs.append(cost)
+        columns.append(set(rows))
+
+    return m, n, costs, columns
+
+
+def greedy_randomized(solution, alpha=3) -> SCSolution:
+    while solution.uncovered:
+
+        target_row = random.choice(solution.uncovered)
+
+        # columns that cover the randomly selected row
+        candidate_cols = solution.rows[target_row]
+
+        scores = []
+        uncovered_set = set(solution.uncovered)  # for fast intersection check
+
+        for j in candidate_cols:
+            if solution.selected[j]:
+                continue
+
+            # Count how many NEW rows this column covers
+            new_coverage = len(solution.columns[j] & uncovered_set)
+
+            if new_coverage > 0:
+                # Score = cost / added_benefit
+                score = solution.costs[j] / new_coverage
+                scores.append((score, j))
+
+        if not scores:
+            break
+
+        # Restricted Candidate List and choose from the top alpha columns
+        scores.sort(key=lambda x: x[0])
+        top_alpha = scores[: min(alpha, len(scores))]
+        _, chosen_col = random.choice(top_alpha)
+
+        solution.add_column(chosen_col)
+
+    return solution
+
+
+def localSearch(solution) -> SCSolution:
+    improved = True
+    while improved:
+        improved = False
+        selected = [j for j in range(solution.n) if solution.selected[j]]
+        # random.shuffle(selected) since im sampling randomly each time we dont need to shuffle
+        for j in random.sample(selected, min(len(selected), 150)):
+            # Try removing column j
+            old_cost = solution.total_cost
+            solution.remove_column(j)
+
+            # Repair the solution
+            added = []
+            while solution.uncovered:
+                target_row = random.choice(solution.uncovered)
+                # Find best col for this row only
+                best_c = -1
+                best_score = float("inf")
+                for c in solution.rows[target_row]:
+                    if solution.selected[c]:
+                        continue
+                    # Quick score check
+                    score = solution.costs[c] / len(solution.columns[c] & set(solution.uncovered))
+                    if score < best_score:
+                        best_score = score
+                        best_c = c
+                if best_c != -1:
+                    solution.add_column(best_c)
+                    added.append(best_c)
+                else:
+                    break
+
+            solution.remove_redundant_columns()
+
+            if solution.total_cost < old_cost:
+                improved = True
+                break
+            else:
+                # Undo the changes
+                for a in added:
+                    solution.remove_column(a)
+                solution.add_column(j)
+    return solution
+
+
+def ILS(initial_solution, iterations=75) -> SCSolution:
+    best = initial_solution.copy()
+    k = 5
+
+    for _ in range(iterations):
+        # t0=time.perf_counter()
+        temp_sol = best.copy()
+
+        # Perturb by removing at most k columns
+        selected = [j for j in range(temp_sol.n) if temp_sol.selected[j]]
+        k_capped = min(k, len(selected))
+        removed = random.sample(selected, k_capped)
+        for j in removed:
+            temp_sol.remove_column(j)
+
+        # Repair and Local Search
+        temp_sol = greedy_randomized(temp_sol, alpha=2)
+        temp_sol.remove_redundant_columns()
+        # t2=time.perf_counter()
+        temp_sol = localSearch(temp_sol)
+        # t3=time.perf_counter()
+        # print(f"local search step time {t3-t2}")
+
+        if temp_sol.total_cost < best.total_cost:
+            best = temp_sol.copy()
+            k = 5  # Reset the number of removed columns
+            print(f"New Global Best: {best.total_cost}")
+        else:
+            k += 1  # Try to increase how many columsn i remove
+            if k > 20:
+                k = 5  # Reset search back to base
+        # t1=time.perf_counter()
+        # print(f"iteration {_} time {t1-t0}")
+
+    return best
+
+
+def GRASP(m, n, costs, columns, rows, iterations=50) -> SCSolution:
+    best_overall = None  # pylance likes to complain about the None assignment, its most likely okay
+
+    for _ in range(iterations):
+        # 20% of the time, or if first run, start from a fresh solution
+        if best_overall is None or random.random() < 0.2:
+            sol = SCSolution(m, n, costs, columns, rows)
+            # t0=time.perf_counter()
+            sol = greedy_randomized(sol, alpha=5)
+            # t1=time.perf_counter()
+            # print(f"greedy time {t1-t0}")
+        else:
+            # 80% of the time, remove some columns from the best solution and repair it
+            sol = best_overall.copy()
+            selected = [j for j in range(sol.n) if sol.selected[j]]
+            to_remove = random.sample(selected, int(len(selected) * 0.3))
+            for j in to_remove:
+                sol.remove_column(j)
+            sol = greedy_randomized(sol, alpha=2)
+
+        sol.remove_redundant_columns()
+        sol = ILS(sol, iterations=50)
+
+        if best_overall is None or sol.total_cost < best_overall.total_cost:
+            best_overall = sol.copy()
+            print(f"--- NEW RECORD: {best_overall.total_cost} ---")
+    return best_overall  # pyright: ignore[reportReturnType]
+
+
+def GRASP_parallel_wrapper(m, n, costs, columns, rows, iterations, seed_sol=None) -> SCSolution:
+    """
+    A single worker's task: runs a few iterations of GRASP.
+    If seed_sol is provided, it starts by shattering that.
+    """
+    best_local = seed_sol.copy() if seed_sol else None
+
+    for it in range(iterations):
+        if best_local is None or random.random() < 0.2:
+            sol = SCSolution(m, n, costs, columns, rows)
+            sol = greedy_randomized(sol, alpha=5)
+        else:
+            sol = best_local.copy()
+            selected = [j for j in range(sol.n) if sol.selected[j]]
+            to_remove = random.sample(selected, int(len(selected) * 0.3))
+            for j in to_remove:
+                sol.remove_column(j)
+            sol = greedy_randomized(sol, alpha=2)
+
+        sol.remove_redundant_columns()
+        sol = ILS(sol, iterations=30)  # Slightly shorter ILS for parallel batches
+
+        if best_local is None or sol.total_cost < best_local.total_cost:
+            best_local = sol.copy()
+
+    return best_local
+
+
+if __name__ == "__main__":
+
+    folder = "./rail/instances/"
+    m, n, costs, columns = load_scp_column_format(folder + "rail2536")
+    # create rows data structure
+    rows = [set() for row in range(m)]
+    for j, col in enumerate(columns):
+        for i in col:
+            rows[i].add(j)
+    # res = GRASP(m, n, costs, columns, rows, iterations=50)
+
+    # print(f" best {res}, cost: {res.total_cost}")
+    # use joblib to run multiple GRASP instances in parallel
+
+    # --- Main Execution ---
+    total_iterations = 100
+    batch_size = 5  # Each worker does 5 iterations before reporting back
+    best_overall = None
+
+    for i in range(0, total_iterations, batch_size * 4):  # 4 is n_jobs
+        # Run 4 workers in parallel
+        results = Parallel(n_jobs=4)(delayed(GRASP_parallel_wrapper)(m, n, costs, columns, rows, batch_size, best_overall) for _ in range(4))
+
+        # Sync: Find the best among all workers
+        for sol in results:
+            if best_overall is None or sol.total_cost < best_overall.total_cost:
+                best_overall = sol.copy()
+                print(f"--- GLOBAL SYNC RECORD: {best_overall.total_cost} ---")
+
+    # num_runs = 4
+    # results = Parallel(n_jobs=num_runs)(delayed(GRASP)(m, n, costs, columns, rows, iterations=50) for _ in range(num_runs))
