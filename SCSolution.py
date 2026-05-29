@@ -1,3 +1,4 @@
+# class for managing the data structures
 class SCSolution:
     def __init__(self, m, n, costs, columns, rows):
         self.m = m
@@ -48,15 +49,6 @@ class SCSolution:
                 self.row_to_uncovered_idx[i] = len(self.uncovered)
                 self.uncovered.append(i)
 
-    def is_redundant(self, j):
-        """
-        Check if the column j is redundant, meaning that all the rows are already covered by other selected columns.
-        """
-        for i in self.columns[j]:
-            if self.cover_count[i] <= 1:
-                return False
-        return True
-
     def remove_redundant_columns(self):
         """Sort by cost to remove expensive redundant columns first."""
         selected_cols = [j for j, s in enumerate(self.selected) if s]
@@ -71,9 +63,6 @@ class SCSolution:
                     break
             if is_red:
                 self.remove_column(j)
-
-    def get_critical_rows(self):
-        return [i for i in range(self.m) if self.cover_count[i] == 1]
 
     def copy(self):
         new = SCSolution(self.m, self.n, self.costs, self.columns, self.rows)

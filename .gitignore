@@ -3,3 +3,5 @@ solchecker.py
 rail.tar.gz
 Project.pdf
 /__pycache__/*
+__pycache__/SCSolution.cpython-312.pyc
+/logs/*
