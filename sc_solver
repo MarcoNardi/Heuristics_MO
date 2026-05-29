@@ -228,6 +228,8 @@ def GRASP_with_reporting(m, n, costs, columns, rows, report_callback, total_iter
     # divide iterations by (batch_size * n_jobs)
     # n_jobs=4 assumes aquad-core setup
     n_jobs = 4
+    if m < 2000:
+        total_iterations = 100
 
     for i in range(0, total_iterations, batch_size * n_jobs):
         # 1. Dispatch workers with the current global best
